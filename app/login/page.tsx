@@ -1,17 +1,37 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { loginWithCoreAuth } from "@/lib/api";
-import { saveAccessToken } from "@/lib/auth";
+import { getAccessToken, saveAccessToken } from "@/lib/auth";
 
 export default function LoginPage() {
   const router = useRouter();
+  const [authState, setAuthState] = useState({
+    isAuthReady: false,
+    isAuthenticated: false,
+  });
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    const token = getAccessToken();
+
+    if (token) {
+      queueMicrotask(() => {
+        setAuthState({ isAuthReady: true, isAuthenticated: true });
+      });
+      router.replace("/");
+      return;
+    }
+
+    queueMicrotask(() => {
+      setAuthState({ isAuthReady: true, isAuthenticated: false });
+    });
+  }, [router]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -33,6 +53,10 @@ export default function LoginPage() {
     saveAccessToken(response.data.access_token);
     router.push("/");
   };
+
+  if (!authState.isAuthReady || authState.isAuthenticated) {
+    return null;
+  }
 
   return (
     <main className="min-h-screen flex items-center justify-center bg-[var(--bg-app)] px-4">

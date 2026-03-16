@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useSimulation } from "@/hooks/useSimulation";
 import SimulationForm from "@/components/SimulationForm";
@@ -10,13 +10,26 @@ import { motion, AnimatePresence } from "framer-motion";
 
 export default function Home() {
   const router = useRouter();
-  const token = getAccessToken();
+  const [authState, setAuthState] = useState({
+    isAuthReady: false,
+    isAuthenticated: false,
+  });
 
   useEffect(() => {
+    const token = getAccessToken();
+
     if (!token) {
+      queueMicrotask(() => {
+        setAuthState({ isAuthReady: true, isAuthenticated: false });
+      });
       router.replace("/login");
+      return;
     }
-  }, [router, token]);
+
+    queueMicrotask(() => {
+      setAuthState({ isAuthReady: true, isAuthenticated: true });
+    });
+  }, [router]);
 
   const {
     formData,
@@ -28,7 +41,7 @@ export default function Home() {
     resetSimulation,
   } = useSimulation();
 
-  if (!token) {
+  if (!authState.isAuthReady || !authState.isAuthenticated) {
     return null;
   }
 
