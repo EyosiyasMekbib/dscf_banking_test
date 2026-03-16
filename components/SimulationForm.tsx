@@ -1,10 +1,17 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import TransactionBuilder from "./TransactionBuilder";
 import { SimulationFormData } from "@/hooks/useSimulation";
-import { Transaction, validateInitialBalance, validateDateRange, validateRequiredField } from "@/lib/validation";
+import {
+  Transaction,
+  validateInitialBalance,
+  validateDateRange,
+  validateRequiredField,
+  validateTransactions,
+} from "@/lib/validation";
+import { Account, fetchAccounts } from "@/lib/api";
 
 interface SimulationFormProps {
   formData: SimulationFormData;
@@ -20,6 +27,66 @@ export default function SimulationForm({
   isLoading,
 }: SimulationFormProps) {
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [isAccountsLoading, setIsAccountsLoading] = useState(true);
+  const [accountsError, setAccountsError] = useState<string | null>(null);
+  const [qaAccessToken, setQaAccessToken] = useState(() => {
+    if (typeof window === "undefined") {
+      return "";
+    }
+
+    return localStorage.getItem("accessToken") || "";
+  });
+  const [tokenMessage, setTokenMessage] = useState<string | null>(null);
+
+  const loadAccounts = useCallback(async () => {
+    setIsAccountsLoading(true);
+    setAccountsError(null);
+
+    const response = await fetchAccounts();
+    if (response.success) {
+      setAccounts(response.data);
+    } else {
+      setAccountsError(response.error || "Failed to load accounts.");
+    }
+
+    setIsAccountsLoading(false);
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadAccounts();
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [loadAccounts]);
+
+  const handleSaveToken = () => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    if (!qaAccessToken.trim()) {
+      setTokenMessage("Please paste a valid access token before saving.");
+      return;
+    }
+
+    localStorage.setItem("accessToken", qaAccessToken.trim());
+    setTokenMessage("Access token saved. Reloading accounts...");
+    loadAccounts();
+  };
+
+  const handleClearToken = () => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    localStorage.removeItem("accessToken");
+    setQaAccessToken("");
+    setTokenMessage("Access token cleared.");
+  };
 
   const updateField = (field: keyof SimulationFormData, value: string | Transaction[]) => {
     onChange({
@@ -58,6 +125,15 @@ export default function SimulationForm({
       if (!dateValidation.isValid) {
         newErrors.dateRange = dateValidation.error || "";
       }
+
+      const transactionsValidation = validateTransactions(
+        formData.transactions,
+        formData.startDate,
+        formData.endDate
+      );
+      if (!transactionsValidation.isValid) {
+        newErrors.transactions = transactionsValidation.error || "";
+      }
     }
 
     setErrors(newErrors);
@@ -81,20 +157,78 @@ export default function SimulationForm({
         Interest Simulation
       </h2>
 
+      <div className="mb-6 rounded-lg border border-amber-300 bg-amber-50 p-4">
+        <p className="text-sm font-semibold text-amber-900">QA Access Token</p>
+        <p className="mt-1 text-xs text-amber-800">
+          No login page is configured in this app. Paste a valid access token to authorize account loading.
+        </p>
+        <div className="mt-3 space-y-2">
+          <textarea
+            value={qaAccessToken}
+            onChange={(e) => {
+              setQaAccessToken(e.target.value);
+              setTokenMessage(null);
+            }}
+            placeholder="Paste Bearer access token"
+            rows={3}
+            className="w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-xs text-gray-900 focus:outline-none focus:ring-2 focus:ring-amber-400"
+            disabled={isLoading}
+          />
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={handleSaveToken}
+              className="rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700"
+              disabled={isLoading}
+            >
+              Save Token
+            </button>
+            <button
+              type="button"
+              onClick={handleClearToken}
+              className="rounded-md border border-amber-400 bg-white px-3 py-1.5 text-xs font-medium text-amber-800 hover:bg-amber-100"
+              disabled={isLoading}
+            >
+              Clear Token
+            </button>
+            <button
+              type="button"
+              onClick={loadAccounts}
+              className="rounded-md border border-amber-400 bg-white px-3 py-1.5 text-xs font-medium text-amber-800 hover:bg-amber-100"
+              disabled={isLoading || isAccountsLoading}
+            >
+              Reload Accounts
+            </button>
+          </div>
+          {tokenMessage && <p className="text-xs text-amber-900">{tokenMessage}</p>}
+        </div>
+      </div>
+
       <form onSubmit={handleSubmit} className="space-y-6">
         <div>
           <label htmlFor="accountId" className="block text-sm font-medium text-gray-700 mb-2">
-            Account Number <span className="text-red-600">*</span>
+            Select Account <span className="text-red-600">*</span>
           </label>
-          <input
+          <select
             id="accountId"
-            type="text"
             value={formData.accountId}
             onChange={(e) => updateField("accountId", e.target.value)}
-            placeholder="Enter account number"
-            className="w-full px-4 py-2.5 bg-white border border-gray-300 rounded-lg text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
-            disabled={isLoading}
-          />
+            className="w-full px-4 py-2.5 bg-white border border-gray-300 rounded-lg text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-action focus:border-transparent transition-all"
+            disabled={isLoading || isAccountsLoading}
+          >
+            <option value="">
+              {isAccountsLoading ? "Loading accounts..." : "Choose an account"}
+            </option>
+            {accounts.map((account) => (
+              <option key={account.id} value={account.account_number}>
+                {account.account_number}
+                {account.customer_name ? ` - ${account.customer_name}` : ""}
+              </option>
+            ))}
+          </select>
+          {accountsError && (
+            <p className="mt-1 text-sm text-red-600">{accountsError}</p>
+          )}
           {errors.accountId && (
             <p className="mt-1 text-sm text-red-600">{errors.accountId}</p>
           )}
@@ -112,7 +246,7 @@ export default function SimulationForm({
             value={formData.initialBalance}
             onChange={(e) => updateField("initialBalance", e.target.value)}
             placeholder="10000.00"
-            className="w-full px-4 py-2.5 bg-white border border-gray-300 rounded-lg text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
+            className="w-full px-4 py-2.5 bg-white border border-gray-300 rounded-lg text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-action focus:border-transparent transition-all"
             disabled={isLoading}
           />
           {errors.initialBalance && (
@@ -130,7 +264,7 @@ export default function SimulationForm({
               type="date"
               value={formData.startDate}
               onChange={(e) => updateField("startDate", e.target.value)}
-              className="w-full px-4 py-2.5 bg-white border border-gray-300 rounded-lg text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
+              className="w-full px-4 py-2.5 bg-white border border-gray-300 rounded-lg text-gray-900 focus:outline-none focus:ring-2 focus:ring-action focus:border-transparent transition-all"
               disabled={isLoading}
             />
             {errors.startDate && (
@@ -147,7 +281,7 @@ export default function SimulationForm({
               type="date"
               value={formData.endDate}
               onChange={(e) => updateField("endDate", e.target.value)}
-              className="w-full px-4 py-2.5 bg-white border border-gray-300 rounded-lg text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
+              className="w-full px-4 py-2.5 bg-white border border-gray-300 rounded-lg text-gray-900 focus:outline-none focus:ring-2 focus:ring-action focus:border-transparent transition-all"
               disabled={isLoading}
             />
             {errors.endDate && (
@@ -167,11 +301,15 @@ export default function SimulationForm({
           endDate={formData.endDate}
         />
 
+        {errors.transactions && (
+          <p className="text-sm text-red-600">{errors.transactions}</p>
+        )}
+
         <div className="flex gap-4 pt-4">
           <button
             type="submit"
             disabled={isLoading}
-            className="flex-1 px-6 py-3 bg-gradient-to-r from-primary-600 to-accent-600 hover:from-primary-700 hover:to-accent-700 text-white font-semibold rounded-lg shadow-lg hover:shadow-xl transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex-1 px-6 py-3 bg-gradient-to-r from-action to-action-hover hover:from-action-hover hover:to-action text-white font-semibold rounded-lg shadow-lg hover:shadow-xl transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isLoading ? (
               <span className="flex items-center justify-center gap-2">

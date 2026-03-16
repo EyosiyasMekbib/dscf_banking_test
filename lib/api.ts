@@ -47,6 +47,147 @@ export interface SimulationResult {
   accounting_records: AccountingEntry[];
 }
 
+type RawDailyBreakdown = Record<string, unknown>;
+type RawAccountingEntry = Record<string, unknown>;
+
+function toNumber(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function toMoneyString(value: unknown): string {
+  return toNumber(value).toFixed(2);
+}
+
+function normalizeDailyBreakdown(rawDailyBreakdown: unknown): DailyBreakdown[] {
+  if (!Array.isArray(rawDailyBreakdown)) {
+    return [];
+  }
+
+  let previousClosing = 0;
+
+  return rawDailyBreakdown.map((item) => {
+    const row = item as RawDailyBreakdown;
+    const balance = toNumber(row.balance);
+    const dailyInterest = toNumber(
+      row.interest ?? row.daily_interest ?? row.daily_interest_accrued
+    );
+    const transactionTotal = toNumber(row.transaction_total);
+
+    const explicitOpening =
+      row.opening_balance ?? row.beginning_balance ?? row.opening;
+    const explicitClosing =
+      row.closing_balance ?? row.ending_balance ?? row.closing;
+
+    const openingBalance =
+      explicitOpening !== undefined
+        ? toNumber(explicitOpening)
+        : previousClosing || balance - transactionTotal;
+    const closingBalance =
+      explicitClosing !== undefined
+        ? toNumber(explicitClosing)
+        : balance + dailyInterest;
+
+    previousClosing = closingBalance;
+
+    return {
+      date: String(row.date || ""),
+      opening_balance: toMoneyString(openingBalance),
+      interest: toMoneyString(dailyInterest),
+      closing_balance: toMoneyString(closingBalance),
+      rate_used: String(row.rate_used ?? row.rate ?? "-"),
+      days: Math.max(1, Math.trunc(toNumber(row.days) || 1)),
+    };
+  });
+}
+
+function normalizeAccountingRecords(rawRecords: unknown): AccountingEntry[] {
+  if (!Array.isArray(rawRecords)) {
+    return [];
+  }
+
+  return rawRecords.map((item) => {
+    const row = item as RawAccountingEntry;
+
+    if (row.account || row.debit || row.credit || row.description) {
+      return {
+        account: String(row.account || "-"),
+        debit: row.debit != null ? toMoneyString(row.debit) : null,
+        credit: row.credit != null ? toMoneyString(row.credit) : null,
+        description: String(row.description || "-"),
+      };
+    }
+
+    const type = String(row.type || "entry");
+    const amount = toMoneyString(row.amount);
+    const currency = String(row.currency || "ETB");
+    const date = row.date ? String(row.date) : "";
+
+    return {
+      account: type.replaceAll("_", " ").replace(/\b\w/g, (m) => m.toUpperCase()),
+      debit: type === "tax" ? amount : null,
+      credit: type === "tax" ? null : amount,
+      description: [currency, date].filter(Boolean).join(" • ") || "Simulation entry",
+    };
+  });
+}
+
+function normalizeSimulationResult(raw: unknown): SimulationResult {
+  const payload = (raw || {}) as Record<string, unknown>;
+
+  const grossInterest = payload.gross_interest ?? payload.total_interest ?? 0;
+  const taxAmount = payload.tax_amount ?? 0;
+  const netInterest =
+    payload.net_interest ?? toNumber(grossInterest) - toNumber(taxAmount);
+
+  return {
+    gross_interest: toMoneyString(grossInterest),
+    tax_amount: toMoneyString(taxAmount),
+    net_interest: toMoneyString(netInterest),
+    daily_breakdown: normalizeDailyBreakdown(payload.daily_breakdown),
+    accounting_records: normalizeAccountingRecords(payload.accounting_records),
+  };
+}
+
+function extract422ErrorMessage(errorData: Record<string, unknown>): string {
+  if (typeof errorData.error === "string" && errorData.error.trim()) {
+    return errorData.error;
+  }
+
+  if (Array.isArray(errorData.errors)) {
+    const messages = errorData.errors
+      .map((entry) => (typeof entry === "string" ? entry : ""))
+      .filter(Boolean);
+
+    if (messages.length > 0) {
+      return messages.join("; ");
+    }
+  }
+
+  if (errorData.errors && typeof errorData.errors === "object") {
+    const fieldMessages = Object.entries(errorData.errors as Record<string, unknown>)
+      .flatMap(([field, value]) => {
+        if (Array.isArray(value)) {
+          return value
+            .map((message) => (typeof message === "string" ? `${field}: ${message}` : ""))
+            .filter(Boolean);
+        }
+
+        if (typeof value === "string") {
+          return [`${field}: ${value}`];
+        }
+
+        return [];
+      });
+
+    if (fieldMessages.length > 0) {
+      return fieldMessages.join("; ");
+    }
+  }
+
+  return "Invalid request. Please check your input and try again.";
+}
+
 const API_BASE_URL = "/api";
 const BANKING_API_BASE = `${API_BASE_URL}/banking`;
 const CORE_API_BASE = `${API_BASE_URL}/core`;
@@ -61,6 +202,24 @@ export function setAuthTokenGetter(getter: TokenGetter | null): void {
   authTokenGetter = getter;
 }
 
+function getCookieValue(name: string): string | null {
+  if (typeof document === "undefined") {
+    return null;
+  }
+
+  const key = `${encodeURIComponent(name)}=`;
+  const parts = document.cookie.split(";");
+
+  for (const part of parts) {
+    const cookie = part.trim();
+    if (cookie.startsWith(key)) {
+      return decodeURIComponent(cookie.slice(key.length));
+    }
+  }
+
+  return null;
+}
+
 function getAuthToken(): string | null {
   if (authTokenGetter) {
     return authTokenGetter() || null;
@@ -71,7 +230,20 @@ function getAuthToken(): string | null {
   }
 
   try {
-    return localStorage.getItem("token") || localStorage.getItem("access_token");
+    const localToken =
+      localStorage.getItem("accessToken") ||
+      localStorage.getItem("token") ||
+      localStorage.getItem("access_token");
+
+    if (localToken) {
+      return localToken;
+    }
+
+    return (
+      getCookieValue("accessToken") ||
+      getCookieValue("token") ||
+      getCookieValue("access_token")
+    );
   } catch {
     return null;
   }
@@ -109,12 +281,12 @@ async function fetchWithRetry(
 ): Promise<Response> {
   try {
     const response = await fetch(url, options);
-    
+
     if (!response.ok && retries > 0 && response.status >= 500) {
       await sleep(RETRY_DELAY);
       return fetchWithRetry(url, options, retries - 1);
     }
-    
+
     return response;
   } catch (error) {
     if (retries > 0) {
@@ -130,7 +302,7 @@ export async function runSimulation(
 ): Promise<ApiResponse<SimulationResult>> {
   try {
     const url = buildBankingUrl(`/accounts/${request.account_number}/interest_simulations`);
-    
+
     const response = await fetchWithRetry(url, {
       method: "POST",
       headers: buildHeaders({
@@ -151,16 +323,16 @@ export async function runSimulation(
           error: "Account not found. Please check the account ID and try again.",
         };
       }
-      
+
       if (response.status === 422) {
         const errorData = await response.json().catch(() => ({}));
         return {
           success: false,
-          error: errorData.error || "Invalid request. Please check your input and try again.",
+          error: extract422ErrorMessage(errorData),
           details: errorData,
         };
       }
-      
+
       return {
         success: false,
         error: `Server error (${response.status}). Please try again later.`,
@@ -168,7 +340,7 @@ export async function runSimulation(
     }
 
     const data = await response.json();
-    
+
     if (data.success === false) {
       return {
         success: false,
@@ -179,7 +351,7 @@ export async function runSimulation(
 
     return {
       success: true,
-      data: data.data || data,
+      data: normalizeSimulationResult(data.data || data),
     };
   } catch (error) {
     console.error("API Error:", error);
@@ -202,7 +374,7 @@ export interface Account {
 export async function fetchAccounts(): Promise<ApiResponse<Account[]>> {
   try {
     const url = buildBankingUrl("/accounts");
-    
+
     const response = await fetchWithRetry(url, {
       method: "GET",
       headers: buildHeaders({
@@ -211,6 +383,13 @@ export async function fetchAccounts(): Promise<ApiResponse<Account[]>> {
     });
 
     if (!response.ok) {
+      if (response.status === 401) {
+        return {
+          success: false,
+          error: "Unauthorized (401). Please sign in again to load accounts.",
+        };
+      }
+
       return {
         success: false,
         error: `Failed to fetch accounts (${response.status})`,
@@ -218,7 +397,7 @@ export async function fetchAccounts(): Promise<ApiResponse<Account[]>> {
     }
 
     const data = await response.json();
-    
+
     return {
       success: true,
       data: data.data || data,

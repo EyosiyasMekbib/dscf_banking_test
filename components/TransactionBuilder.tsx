@@ -19,13 +19,20 @@ export default function TransactionBuilder({
   endDate,
 }: TransactionBuilderProps) {
   const [errors, setErrors] = useState<Record<number, string>>({});
+  const [addTransactionError, setAddTransactionError] = useState("");
 
   const addTransaction = () => {
+    if (!startDate || !endDate) {
+      setAddTransactionError("Set simulation start and end dates before adding transactions.");
+      return;
+    }
+
     const newTransaction: Transaction = {
-      date: startDate || "",
-      amount: 0,
+      date: startDate,
+      amount: 0.01,
       type: "deposit",
     };
+    setAddTransactionError("");
     onChange([...transactions, newTransaction]);
   };
 
@@ -33,8 +40,18 @@ export default function TransactionBuilder({
     const newTransactions = transactions.filter((_, i) => i !== index);
     onChange(newTransactions);
     
-    const newErrors = { ...errors };
-    delete newErrors[index];
+    // Create new errors object with adjusted indices
+    const newErrors: Record<number, string> = {};
+    Object.keys(errors).forEach((key) => {
+        const errorIndex = parseInt(key);
+        if (errorIndex < index) {
+            newErrors[errorIndex] = errors[errorIndex];
+        } else if (errorIndex > index) {
+            newErrors[errorIndex - 1] = errors[errorIndex];
+        }
+        // If errorIndex === index, it is intentionally dropped
+    });
+
     setErrors(newErrors);
   };
 
@@ -101,12 +118,16 @@ export default function TransactionBuilder({
         <button
           type="button"
           onClick={addTransaction}
-          className="px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg text-sm font-medium transition-colors duration-200 flex items-center gap-2"
+          className="px-4 py-2 bg-action hover:bg-action-hover text-white rounded-lg text-sm font-medium transition-colors duration-200 flex items-center gap-2"
         >
           <span>+</span>
           Add Transaction
         </button>
       </div>
+
+      {addTransactionError && (
+        <p className="text-xs text-red-600">{addTransactionError}</p>
+      )}
 
       <AnimatePresence mode="popLayout">
         {transactions.length === 0 ? (
@@ -116,7 +137,7 @@ export default function TransactionBuilder({
             exit={{ opacity: 0 }}
             className="text-center py-8 text-gray-500 text-sm"
           >
-            No transactions added. Click "Add Transaction" to add one.
+            No transactions added. Click &quot;Add Transaction&quot; to add one.
           </motion.div>
         ) : (
           <div className="space-y-3">
@@ -138,7 +159,7 @@ export default function TransactionBuilder({
                       type="date"
                       value={formatDateForInput(transaction.date)}
                       onChange={(e) => updateTransaction(index, "date", e.target.value)}
-                      className="w-full px-3 py-2 bg-white border border-gray-300 rounded-lg text-gray-900 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                      className="w-full px-3 py-2 bg-white border border-gray-300 rounded-lg text-gray-900 text-sm focus:outline-none focus:ring-2 focus:ring-action focus:border-transparent"
                     />
                   </div>
 
@@ -149,11 +170,11 @@ export default function TransactionBuilder({
                     <input
                       type="number"
                       step="0.01"
-                      min="0"
+                      min="0.01"
                       value={transaction.amount || ""}
                       onChange={(e) => updateTransaction(index, "amount", e.target.value)}
                       placeholder="0.00"
-                      className="w-full px-3 py-2 bg-white border border-gray-300 rounded-lg text-gray-900 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                      className="w-full px-3 py-2 bg-white border border-gray-300 rounded-lg text-gray-900 text-sm focus:outline-none focus:ring-2 focus:ring-action focus:border-transparent"
                     />
                   </div>
 
